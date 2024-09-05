@@ -13,7 +13,7 @@ args = getResolvedOptions(sys.argv, ['JOB_NAME', 'output_path', 'input_path'])
 
 
 
-# Initialize the Spark session
+# Initialize the Spark session with delta lake compatible configurations
 spark = SparkSession.builder \
     .appName("Delta Lake Upsert Data Aggregations") \
     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
@@ -21,11 +21,18 @@ spark = SparkSession.builder \
     .config("spark.databricks.delta.retentionDurationCheck.enabled", "false") \
     .getOrCreate()
     
-    
+
+# collect the essential job params
 output_dest_loc = args['output_path']
 input_source_loc = args['input_path']
 
+
+
+
+
 def channel_data_cleaning():
+
+    # schema for the channel raw data
     channel_schema = StructType([
         StructField('channel_id', StringType(), True),
         StructField('title', StringType(), True),
@@ -41,12 +48,17 @@ def channel_data_cleaning():
     channel_df = spark.read.format('csv').option('header', True).option('multiline', True).schema(channel_schema).load(f"{input_source_loc}channel/youtube_channels_data.csv")
     channel_df.show()
     
+    # selecting required cols
     channel_df = channel_df.select("channel_id", "title", "description", F.to_date(F.col('published_at')).alias('published_date'), "default_language", "country", "views_count", "subscribers_count", "videos_count", F.to_date(F.to_utc_timestamp(F.current_date(), 'UTC')).alias('updated_date'))
     
-    channel_df.write.format('delta').partitionBy('updated_date').option('mode', 'append').save(f'{output_dest_loc}curated_channel_data')
+    # writing the data as delta format to S3
+    channel_df.write.format('delta').partitionBy('updated_date').mode('append').save(f'{output_dest_loc}curated_channel_data/')
     
 
 def video_data_cleaning():
+
+    # schema for video raw data
+
     vid_schema = StructType([
         StructField('video_id', StringType(), True),
         StructField('channel_id', StringType(), True),
@@ -72,7 +84,29 @@ def video_data_cleaning():
     
     vid_df.printSchema()
     
+    # list of channel ids which I can retrive from glue job params as well from the orchestartion.
+    channel_lst = ["UC0GP1HDhGZTLih7B89z_cTg", "UC4p_I9eiRewn2KoU-nawrDg", "UCrbQxu0YkoVWu2dw5b1MzNg", "UCs0xZ60FSNxFxHPVFFsXNTA", "UC_WgSFSkn7112rmJQcHSUIQ"]
     
+    # checking out the clean and corrupted records for the data insights
+    clean_filter_cond = ~(~F.col('channel_id').isin(channel_lst) | F.col('channel_id').isNull())
+    corrupt_filter_cond = (~F.col('channel_id').isin(channel_lst) | F.col('channel_id').isNull())
+    
+    vid_cleaned_df = vid_df.filter(clean_filter_cond)
+    
+    # finding the null counts in all the cols
+    vid_cleaned_stats_df = vid_cleaned_df.select([F.count(F.when(F.col(colu).isNull() | F.col(colu).contains('NULL'), colu)).alias(colu) for colu in vid_df.columns])
+    vid_cleaned_stats_df.show(truncate=False)
+    
+    # finding the corrupted records count
+    vid_corrupted_df = vid_df.filter(corrupt_filter_cond)
+    print("Count of Corrupted records are", vid_corrupted_df.count())
+
+    vid_df = vid_cleaned_df.select('*')
+    
+    # sample_video_id = "3VNUe0rqBi0"
+    # vid_df = vid_df.filter(F.length(F.col('video_id')) == F.lit(len(sample_id)).alias('length_val')).select(F.col('video_id'), 'channel_id').show(50)
+    
+    # selecting the required cols with come modification on the data format
     video_df = vid_df.select('video_id',
         'channel_id',
          F.to_date(F.col('published_at')).alias('published_date'),
@@ -86,7 +120,7 @@ def video_data_cleaning():
          'virtual_dimension',
          'quality_definition',
          'privacy_status',
-         F.split(F.col('topic_category'), ',').alias('topic_category'),
+         'topic_category',
          'views_count',
          'likes_count',
          'dislikes_count',
@@ -95,10 +129,14 @@ def video_data_cleaning():
           F.to_date(F.to_utc_timestamp(F.current_date(), 'UTC')).alias('updated_date')
     )
     
-    video_df.write.format('delta').partitionBy('updated_date').option('mode', 'append').save(f'{output_dest_loc}curated_video_data')
+    # writing the data as delta format back to S3 location
+    video_df.write.format('delta').partitionBy('updated_date').mode('append').save(f'{output_dest_loc}curated_video_data/')
 
-
-channel_data_cleaning()
-video_data_cleaning()
+try:
+    channel_data_cleaning()
+    video_data_cleaning()
+except Exception as e:
+    print("Error occurred -", e)
+    raise Exception(e)
 
 spark.stop()

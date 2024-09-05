@@ -1,12 +1,10 @@
 import json
 from googleapiclient.discovery import build
 import csv
-import io
-import sys
 import os
 import boto3
 
-API_KEY = "AIzaSyD-NE3FaisbWRJYBSEEwHxBFfER6grx4CY"
+API_KEY = os.getenv('API_KEY')
 
 youtube = build(
     'youtube', 'v3', developerKey=API_KEY
@@ -17,6 +15,9 @@ s3_client = boto3.client('s3')
 
 
 def write_to_csv(filename, data, category):
+    """
+    This fucntion is used to write the data as csv to S3 bucket
+    """
 
     video_schema = ['video_id', 'channel_id', 'published_at', 'title', 'description', 'hashtags', 'audio_language', 'content_duration', 'virtual_dimension', 'quality_definition', 'privacy_status', 'topic_category', 'views_count', 'likes_count', 'dislikes_count', 'favorites_count', 'comments_count']
     channel_schema = ["channel_id", "title", "description", "published_at", "default_language", "country", "views_count", "subscribers_count", "videos_count"]
@@ -59,6 +60,10 @@ def write_to_csv(filename, data, category):
 
 
 def get_channels(channel_name_lst):
+    """
+    This function helps to get the channel info based on the channel names we pass it as param and store it as dict format.
+    """
+
     channel_data_info = {}
     channel_id_info = []
     for channel_name in channel_name_lst:
@@ -86,7 +91,9 @@ def get_channels(channel_name_lst):
     return channel_data_info, channel_id_info
 
 def get_videos(channel_id):
-    # url = f"https://www.googleapis.com/youtube/v3/search?key={API_KEY}&channelId={channel_id}&part=id&order=date&type=video&maxResults=50"
+    """
+    This fucntion helps to hit the youtube API and get the channel info store as list
+    """
     
     videos = []
     next_page_token = None
@@ -106,10 +113,16 @@ def get_videos(channel_id):
         if not next_page_token:
             break
         # url = f"{url}&pageToken={next_page_token}"
-    return [video['id']['videoId'] for video in videos]
+    return {video['id']['videoId'] for video in videos}
 
 def get_video_statistics(video_ids):
+    """
+    This fucntion helps to hit the youtube API and get the video stats info store as list
+    """
+
     video_data = []
+    
+    video_ids = list(video_ids)
 
     for i in range(0, len(video_ids), 50):
         video_ids_chunk = video_ids[i:i + 50]
@@ -123,6 +136,10 @@ def get_video_statistics(video_ids):
     return video_data
 
 def parse_video_data(video_data):
+    """
+    This function helps to parse the video data based on the list of info extracted from the youtube api and convert the relevant info as list.
+    """
+
     video_lst = []
     for data_chunk in video_data:
         video_info = []
@@ -151,6 +168,9 @@ def parse_video_data(video_data):
 
 
 def channel_videos_info(channel_ids):
+    """
+    This function helps to drive the info related to videos extraction.
+    """
     final_videos_lst = []
     for channel_id in channel_ids:
         videos_id_lst = get_videos(channel_id)
@@ -166,24 +186,34 @@ def lambda_handler(event, context):
     
     print(f"{event=}")
     
-    channel_names = ['straitstimesonline', 'TheBusinessTimes', 'zaobaodotsg','Tamil_Murasu', 'BeritaHarianSG1957']
-
-    print('Extracting channel_info')
-
-    channel_data_lst, channel_ids = get_channels(channel_names)
-    channel_data_lst, channel_ids
-
-    print("saved channel info to S3 bucket")
-
-    write_to_csv("youtube_channels_data.csv", list(channel_data_lst.values()), "channel")
+    try:
     
-    print('Extracting video info')
+        channel_names = ['straitstimesonline', 'TheBusinessTimes', 'zaobaodotsg','Tamil_Murasu', 'BeritaHarianSG1957']
     
-    videos_detail_info = channel_videos_info(channel_ids)
+        print('Extracting channel_info')
     
-    write_to_csv("youtube_videos_data.csv", videos_detail_info, "video")
-
-    print("saved video info to S3 bucket")
+        channel_data_lst, channel_ids = get_channels(channel_names)
+        channel_data_lst, channel_ids
+    
+        print("saved channel info to S3 bucket")
+    
+        write_to_csv("youtube_channels_data.csv", list(channel_data_lst.values()), "channel")
+        
+        print('Extracting video info')
+        
+        videos_detail_info = channel_videos_info(channel_ids)
+        
+        write_to_csv("youtube_videos_data.csv", videos_detail_info, "video")
+    
+        print("saved video info to S3 bucket")
+        
+    except Exception as e:
+        print("Error is", e)
+        return {
+            'statusCode': 500,
+            'body': json.dumps('Error occurred -', e)
+        }
+        
     
     return {
         'statusCode': 200,
